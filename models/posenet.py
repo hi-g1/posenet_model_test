@@ -2,7 +2,7 @@ import torch
 import torchvision
 
 class PoseNet(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, param):
         super(PoseNet, self).__init__()
 
         mobilenet = torchvision.models.mobilenet_v2(
@@ -12,14 +12,14 @@ class PoseNet(torch.nn.Module):
         self.avgpool = torch.nn.AdaptiveAvgPool2d((7, 7))
 
         self.trans_head = torch.nn.Sequential(
-                torch.nn.Linear(1280 * 7 * 7, 1024), 
+                torch.nn.Linear(1280 * 7 * 7, param), 
                 torch.nn.ReLU(),
-                torch.nn.Linear(1024, 3) )
+                torch.nn.Linear(param, 3) )
         
         self.rot_head = torch.nn.Sequential(
-                torch.nn.Linear(1280 * 7 * 7, 1024), 
+                torch.nn.Linear(1280 * 7 * 7, param), 
                 torch.nn.ReLU(),
-                torch.nn.Linear(1024, 4) )
+                torch.nn.Linear(param, 4) )
 
     def forward(self, x):
         

@@ -24,6 +24,8 @@ if __name__ == "__main__":
     parser.add_argument('--wandb_use', type=boolean_argument, default=True, help='log data')
     parser.add_argument('--is_evaluate', type=boolean_argument, default=True, help='True=> Test, False=> Train')
     parser.add_argument('--save_epoch_period', type=int, default=10, help='save period')
+    parser.add_argument('--param', type=int, default=64, help='for each model parameter ex) 128, 64')
+    parser.add_argument('--beta', type=int, default=250, help='for compute loss in posenet')
 
     parser.add_argument('--model_save_path', type=str, default='checkpoint', help='save model path')
     parser.add_argument('--dataset_path', type=str, default='/home/spilab/ws/Cambridge/Street', help='')

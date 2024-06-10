@@ -24,13 +24,15 @@ class Train(object):
         self.wandb_use = args.wandb_use
         self.save_epoch_period = args.save_epoch_period
         self.dataset_path = args.dataset_path
+        self.beta = args.beta
         self.best_val_loss = 1e10
         self._train_set = 0
         self._valid_set = 0
         self.start_time = datetime.now(timezone('Asia/Seoul')).strftime("%y%m%d%H%M")
         
         # Pose_modelname_param_lr_beta_time
-        self.save_path_with_time = 'Pose_' + '_' + str(self.start_time[2:]) 
+        self.save_path_with_time = 'Pose_' + str(self.args.param) + \
+            '_' + str(self.beta) +str(self.start_time[2:]) 
 
         if self.wandb_use:
             wandb.init(project='Training PosNet')
