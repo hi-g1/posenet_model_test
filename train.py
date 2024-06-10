@@ -1,131 +1,34 @@
-import os
-import numpy as np
-from matplotlib import pyplot as plt
-from sklearn.metrics import confusion_matrix
-from utils import AverageMeter
+import argparse
+from train_class import Train
+from test_class import Test
+from utils import boolean_argument
 
-from PIL import Image
-import cv2
 
-import torch
-import torchvision
-from torchvision import transforms
+def main(args, evaluate):
 
-# the training transforms
-train_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
-# the validation transforms
-val_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
+    if not evaluate:
+        Train(args).train()
+    else:
+        Test(args).test()
 
-train_dataset = torchvision.datasets.ImageFolder(root='./dataset/train', transform=train_transform)
-val_dataset = torchvision.datasets.ImageFolder(root='./dataset/val', transform=val_transform)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', type=int, default=5, help='num of epochs')
+    parser.add_argument('--batch_size', type=int, default=8, help='batch size')
+    parser.add_argument('--img_size', type=int, default=[480,360], help='[width, height]')
 
-image, lable = train_dataset[0]
+    parser.add_argument('--learning_rate', type=float, default=1e-5, help='Decayin_no, sgd 1e-3, adam은 더 느리게')
+    parser.add_argument('--initial_learning_rate', type=float, default=0.001, help='Decayin_yes')
+    
+    parser.add_argument('--device', type=str, default='cuda', help='cpu or gpu')
+    parser.add_argument('--is_evaluate', type=boolean_argument, default=True, help='True=> Test, False=> Train')
+    parser.add_argument('--save_epoch_period', type=int, default=10, help='save period')
 
-batch_size = 8
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+    parser.add_argument('--model_save_path', type=str, default='checkpoint', help='save model path')
+    parser.add_argument('--dataset_path', type=str, default='/home/spilab/ws/Cambridge/Street', help='')
+    parser.add_argument('--test_model_path', type=str, default='/home/spilab/ws/PoseNet/result/', help='')
+    parser.add_argument('--test_dataset_path', type=str, default='/home/spilab/ws/Cambridge/Street', help='')
+    
+    args, rest_args = parser.parse_known_args()
 
-# device
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using {device} device")
-
-model = torchvision.models.squeezenet1_1()
-model = model.to(device)
-
-criterion = torch.nn.CrossEntropyLoss()
-
-learning_rate = 1e-3
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
-
-num_epochs = 10
-loss_meter = AverageMeter()
-
-# Train the model
-total_step = len(train_loader)
-for epoch in range(num_epochs):
-
-    for param_group in optimizer.param_groups:
-        print('learing rage: ', param_group['lr'])
-
-    # train
-    model.train()
-    print ('------------------- Train: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
-
-    loss_meter.reset()
-
-    for i, (X, y) in enumerate(train_loader):
-        X = X.to(device)
-        y = y.to(device)
-
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
-
-        # Backward and optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
-
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
-
-    print ('==> Train loss: {:.4f}'.format(loss_meter.avg) )
-
-    # val
-    model.eval()
-    print ('------------------- Val.: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
-
-    loss_meter.reset()
-
-    for i, (X, y) in enumerate(val_loader):
-        X = X.to(device)
-        y = y.to(device)
-
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
-
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
-
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
-
-    print ('==> Val. loss: {:.4f}'.format(loss_meter.avg) )
-
-torch.save(model.state_dict(), 'trained.pt')
-
-model.load_state_dict(torch.load('trained.pt'))
-model.eval()
-
-cm = np.zeros(shape=(2,2) )
-
-for i, (X, y) in enumerate(val_loader):
-    X = X.to(device)
-    y = y.to(device)
-
-    # forward pass
-    outputs = model(X)
-    loss = criterion(outputs, y)
-
-    # prediction
-    preds = torch.argmax(outputs.data, 1)
-    cm += confusion_matrix(y.cpu(), preds.cpu(),labels=[0,1])
-
-acc = np.sum(np.diag(cm)/np.sum(cm) )
-print ('==> Val. Accuracy: {:.4f}'.format(acc) )
-print('Confusion matrix')
-print(cm)
+    main(args, args.is_evaluate)
