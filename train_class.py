@@ -1,131 +1,206 @@
 import os
-import numpy as np
-from matplotlib import pyplot as plt
-from sklearn.metrics import confusion_matrix
-from utils import AverageMeter
-
-from PIL import Image
-import cv2
-
 import torch
-import torchvision
 from torchvision import transforms
+import wandb
+import cambridge
+from models.posenet import PoseNet
+import criterion
+from utils import AverageMeter
+from datetime import datetime
+from pytz import timezone
 
-# the training transforms
-train_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
-# the validation transforms
-val_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
+class Train(object):
+    def __init__(self, args):
+        
+        self.args = args
+        self.image_width = (args.img_size)[0]
+        self.image_height = (args.img_size)[1]
+        self.batch_size = args.batch_size
+        self.num_epochs = args.epochs
+        self.learning_rate = args.learning_rate
+        self.initial_learning_rate = args.initial_learning_rate
+        self.device = args.device
+        self.model_save_path = args.model_save_path
+        self.wandb_use = args.wandb_use
+        self.save_epoch_period = args.save_epoch_period
+        self.dataset_path = args.dataset_path
+        self.best_val_loss = 1e10
+        self._train_set = 0
+        self._valid_set = 0
+        self.start_time = datetime.now(timezone('Asia/Seoul')).strftime("%y%m%d%H%M")
+        
+        # Pose_modelname_param_lr_beta_time
+        self.save_path_with_time = 'Pose_' + '_' + str(self.start_time[2:]) 
 
-train_dataset = torchvision.datasets.ImageFolder(root='./dataset/train', transform=train_transform)
-val_dataset = torchvision.datasets.ImageFolder(root='./dataset/val', transform=val_transform)
+        if self.wandb_use:
+            wandb.init(project='Training PosNet')
+            wandb.run.name = self.save_path_with_time
+            wandb.run.save()
 
-image, lable = train_dataset[0]
+            model_args = {
+            "learning_rate": args.learning_rate,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "image_size": args.img_size
+            }
 
-batch_size = 8
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+            wandb.config.update(model_args)
+            print('wandb 사용 중')
 
-# device
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using {device} device")
+        if not os.path.exists(self.save_path_with_time):
+            os.makedirs(self.save_path_with_time)
+        print("디렉토리 생성 완료")
+        
+        # cuda or cuda
+        if self.device == "cuda" and torch.cuda.is_available():
+            device = torch.device('cuda')
+        else: device = torch.device('cpu')
+        print(f"using device {device}...")
 
-model = torchvision.models.squeezenet1_1()
-model = model.to(device)
+    def data_loader(self):
+        # basic transform
+        transform = transforms.Compose([
+            transforms.Resize((self.image_height, self.image_width)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                std=[0.229, 0.224, 0.225])
+        ])
 
-criterion = torch.nn.CrossEntropyLoss()
+        # load dataset
+        dataset_root = self.dataset_path
+        train_set = cambridge.CambridgeDataset(dataset_root, 'train', transform=transform)
 
-learning_rate = 1e-3
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+        # split train and val set
+        split_ratio = 0.8
+        seed = 42
+        torch.manual_seed(seed)
+        train_set, val_set = torch.utils.data.random_split(
+            train_set, \
+            [int(len(train_set)*split_ratio), \
+            len(train_set)-int(len(train_set)*split_ratio)]
+        )
+        self._train_set = train_set
+        self._valid_set = val_set
+        # print(type(train_set))
 
-num_epochs = 10
-loss_meter = AverageMeter()
 
-# Train the model
-total_step = len(train_loader)
-for epoch in range(num_epochs):
+        train_loader = torch.utils.data.DataLoader(train_set, batch_size= self.batch_size, shuffle=True)
+        # print((next(iter(train_loader)))[0].size())
+        val_loader = torch.utils.data.DataLoader(val_set, batch_size= self.batch_size, shuffle=True)
 
-    for param_group in optimizer.param_groups:
-        print('learing rage: ', param_group['lr'])
+        return train_loader, val_loader 
+    
+    def train(self):
 
-    # train
-    model.train()
-    print ('------------------- Train: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
+        m = PoseNet()
+        model = m.to(self.device)
 
-    loss_meter.reset()
+        # 옵티마이저
+        optimizer = torch.optim.SGD(m.parameters(), lr=self.learning_rate, momentum=0.9)
 
-    for i, (X, y) in enumerate(train_loader):
-        X = X.to(device)
-        y = y.to(device)
+        # 데이터셋 로드
+        train_loader, val_loader = self.data_loader()
 
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
+        # 데이터 시각화
+        loss_meter = AverageMeter()
+        tr_loss_meter = AverageMeter()
+        rot_loss_meter = AverageMeter()
 
-        # Backward and optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
 
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
+        # Train the model
+        # print(total_step)
+        # print(f"using {device} device...")
+        # print(total_step)
 
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
+        for epoch in range(self.num_epochs):
 
-    print ('==> Train loss: {:.4f}'.format(loss_meter.avg) )
+            # for param_group in optimizer.param_groups:
+            #     print('learing rage: ', param_group['lr'])
 
-    # val
-    model.eval()
-    print ('------------------- Val.: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
+            # train
+            model.train()
+            print ('------------------- Train: Epoch [{}/{}] -------------------'.format(epoch+1, self.num_epochs) )
 
-    loss_meter.reset()
+            loss_meter.reset()
+            tr_loss_meter.reset()
+            rot_loss_meter.reset()
 
-    for i, (X, y) in enumerate(val_loader):
-        X = X.to(device)
-        y = y.to(device)
+            for index, _train_set in enumerate(train_loader):
+                # print(f"Loss: {loss_meter.avg}")
+                image,target_tr,target_rot = _train_set
+                image = image.to(self.device)
+                target_tr = target_tr.to(self.device)
+                target_rot = target_rot.to(self.device)
 
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
+                # Forward pass
+                pred_tr,pred_rot = model(image)
 
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
+                loss, tr_loss, rot_loss  = criterion.compute_pose_loss(pred_tr, pred_rot, target_tr, target_rot, self.beta)
 
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
+                # print(f"loss : {loss} loss_item : {image.size()[0]}")
 
-    print ('==> Val. loss: {:.4f}'.format(loss_meter.avg) )
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
 
-torch.save(model.state_dict(), 'trained.pt')
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0, error_if_nonfinite = True)
+                optimizer.step()
 
-model.load_state_dict(torch.load('trained.pt'))
-model.eval()
+                # logging
+                loss_meter.update(loss.item(), image.size()[0] )
+                tr_loss_meter.update(tr_loss.item(), image.size()[0] )
+                rot_loss_meter.update(rot_loss.item(), image.size()[0] )
 
-cm = np.zeros(shape=(2,2) )
+            if self.wandb_use:
+                wandb.log({"Training loss": loss_meter.avg})
+                wandb.log({"Training tr_loss": tr_loss_meter.avg})
+                wandb.log({"Training rot_loss": rot_loss_meter.avg})
+                # wandb.log({"learning_rate": rot_loss_meter.avg})
 
-for i, (X, y) in enumerate(val_loader):
-    X = X.to(device)
-    y = y.to(device)
+            print ('==> Train. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}\n'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
-    # forward pass
-    outputs = model(X)
-    loss = criterion(outputs, y)
+            # val
+            model.eval()
+            print ('------------------- Val.: Epoch [{}/{}] -------------------'.format(\
+                epoch+1, self.num_epochs) )
 
-    # prediction
-    preds = torch.argmax(outputs.data, 1)
-    cm += confusion_matrix(y.cpu(), preds.cpu(),labels=[0,1])
+            loss_meter.reset()
+            tr_loss_meter.reset()
+            rot_loss_meter.reset()
+            
+            with torch.no_grad():
+                for index, _valid_set in enumerate(val_loader):
+                    image,target_tr,target_rot = _valid_set
+                    image = image.to(self.device)
+                    target_tr = target_tr.to(self.device)
+                    target_rot = target_rot.to(self.device)
 
-acc = np.sum(np.diag(cm)/np.sum(cm) )
-print ('==> Val. Accuracy: {:.4f}'.format(acc) )
-print('Confusion matrix')
-print(cm)
+                    # Forward pass
+                    pred_tr,pred_rot = model(image)
+                    loss, tr_loss, rot_loss = criterion.compute_pose_loss(pred_tr, pred_rot, target_tr, target_rot, self.beta)
+                    # print(loss)
+
+                    # logging
+                    loss_meter.update(loss.item(), image.size()[0] )
+                    tr_loss_meter.update(tr_loss.item(), image.size()[0] )
+                    rot_loss_meter.update(rot_loss.item(), image.size()[0] )
+
+                    # if (index+1) % 10 == 0:
+                    #     print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, tr_loss: {:.4f}  rot_loss: {:.4f}'.format(\
+                    #         epoch+1, self.num_epochs, index+1, total_step, loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
+
+                if self.wandb_use:
+                    wandb.log({"Valid loss": loss_meter.avg})
+                    wandb.log({"Valid tr_loss": tr_loss_meter.avg})
+                    wandb.log({"Valid rot_loss": rot_loss_meter.avg})
+
+            print ('==> Val. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
+
+            if loss_meter.avg < self.best_val_loss:
+                self.best_val_loss = loss_meter.avg
+                torch.save(model.state_dict(), self.save_path_with_time + '/best.pth')
+                print(f"[best model saved]\n")
+            
+            if (epoch+1) % self.save_epoch_period == 0:
+                torch.save(model.state_dict(), self.save_path_with_time + '/epoch'+ str(epoch+1) +'.pth')
+                print(f"[step {epoch+1} model saved]\n")
