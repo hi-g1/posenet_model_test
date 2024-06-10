@@ -1,131 +1,173 @@
 import os
-import numpy as np
-from matplotlib import pyplot as plt
-from sklearn.metrics import confusion_matrix
+import torch
+from torchvision import transforms
+import cambridge
+from models.posenet import PoseNet
+import criterion
 from utils import AverageMeter
 
-from PIL import Image
-import cv2
+class Train(object):
+    def __init__(self, args):
+        
+        self.args = args
+        self.image_width = (args.img_size)[0]
+        self.image_height = (args.img_size)[1]
+        self.batch_size = args.batch_size
+        self.num_epochs = args.epochs
+        self.learning_rate = args.learning_rate
+        self.initial_learning_rate = args.initial_learning_rate
+        self.device = args.device
+        self.model_save_path = args.model_save_path
+        self.save_epoch_period = args.save_epoch_period
+        self.dataset_path = args.dataset_path
+        self.best_val_loss = 1e10
+        self._train_set = 0
+        self._valid_set = 0
 
-import torch
-import torchvision
-from torchvision import transforms
+        if not os.path.exists(self.save_path_with_time):
+            os.makedirs(self.save_path_with_time)
+        print("디렉토리 생성 완료")
+        
+        # cuda or cuda
+        if self.device == "cuda" and torch.cuda.is_available():
+            device = torch.device('cuda')
+        else: device = torch.device('cpu')
+        print(f"using device {device}...")
 
-# the training transforms
-train_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
-# the validation transforms
-val_transform = transforms.Compose([
-    transforms.Resize(224),
-    transforms.ToTensor(),
-])
+    def data_loader(self):
+        # basic transform
+        transform = transforms.Compose([
+            transforms.Resize((self.image_height, self.image_width)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                std=[0.229, 0.224, 0.225])
+        ])
 
-train_dataset = torchvision.datasets.ImageFolder(root='./dataset/train', transform=train_transform)
-val_dataset = torchvision.datasets.ImageFolder(root='./dataset/val', transform=val_transform)
+        # load dataset
+        dataset_root = self.dataset_path
+        train_set = cambridge.CambridgeDataset(dataset_root, 'train', transform=transform)
 
-image, lable = train_dataset[0]
+        # split train and val set
+        split_ratio = 0.8
+        seed = 42
+        torch.manual_seed(seed)
+        train_set, val_set = torch.utils.data.random_split(
+            train_set, \
+            [int(len(train_set)*split_ratio), \
+            len(train_set)-int(len(train_set)*split_ratio)]
+        )
+        self._train_set = train_set
+        self._valid_set = val_set
+        # print(type(train_set))
 
-batch_size = 8
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
 
-# device
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using {device} device")
+        train_loader = torch.utils.data.DataLoader(train_set, batch_size= self.batch_size, shuffle=True)
+        # print((next(iter(train_loader)))[0].size())
+        val_loader = torch.utils.data.DataLoader(val_set, batch_size= self.batch_size, shuffle=True)
 
-model = torchvision.models.squeezenet1_1()
-model = model.to(device)
+        return train_loader, val_loader 
+    
+    def train(self):
 
-criterion = torch.nn.CrossEntropyLoss()
+        m = PoseNet()
+        model = m.to(self.device)
 
-learning_rate = 1e-3
-optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+        # 옵티마이저
+        optimizer = torch.optim.SGD(m.parameters(), lr=self.learning_rate, momentum=0.9)
 
-num_epochs = 10
-loss_meter = AverageMeter()
+        # 데이터셋 로드
+        train_loader, val_loader = self.data_loader()
 
-# Train the model
-total_step = len(train_loader)
-for epoch in range(num_epochs):
+        # 데이터 시각화
+        loss_meter = AverageMeter()
+        tr_loss_meter = AverageMeter()
+        rot_loss_meter = AverageMeter()
 
-    for param_group in optimizer.param_groups:
-        print('learing rage: ', param_group['lr'])
 
-    # train
-    model.train()
-    print ('------------------- Train: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
+        # Train the model
+        # print(total_step)
+        # print(f"using {device} device...")
+        # print(total_step)
 
-    loss_meter.reset()
+        for epoch in range(self.num_epochs):
 
-    for i, (X, y) in enumerate(train_loader):
-        X = X.to(device)
-        y = y.to(device)
+            # for param_group in optimizer.param_groups:
+            #     print('learing rage: ', param_group['lr'])
 
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
+            # train
+            model.train()
+            print ('------------------- Train: Epoch [{}/{}] -------------------'.format(epoch+1, self.num_epochs) )
 
-        # Backward and optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            loss_meter.reset()
+            tr_loss_meter.reset()
+            rot_loss_meter.reset()
 
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
+            for index, _train_set in enumerate(train_loader):
+                # print(f"Loss: {loss_meter.avg}")
+                image,target_tr,target_rot = _train_set
+                image = image.to(self.device)
+                target_tr = target_tr.to(self.device)
+                target_rot = target_rot.to(self.device)
 
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
+                # Forward pass
+                pred_tr,pred_rot = model(image)
 
-    print ('==> Train loss: {:.4f}'.format(loss_meter.avg) )
+                loss, tr_loss, rot_loss  = criterion.compute_pose_loss(pred_tr, pred_rot, target_tr, target_rot, self.beta)
 
-    # val
-    model.eval()
-    print ('------------------- Val.: Epoch [{}/{}] -------------------'.format(\
-        epoch+1, num_epochs) )
+                # print(f"loss : {loss} loss_item : {image.size()[0]}")
 
-    loss_meter.reset()
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
 
-    for i, (X, y) in enumerate(val_loader):
-        X = X.to(device)
-        y = y.to(device)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0, error_if_nonfinite = True)
+                optimizer.step()
 
-        # Forward pass
-        outputs = model(X)
-        loss = criterion(outputs, y)
+                # logging
+                loss_meter.update(loss.item(), image.size()[0] )
+                tr_loss_meter.update(tr_loss.item(), image.size()[0] )
+                rot_loss_meter.update(rot_loss.item(), image.size()[0] )
 
-        # logging
-        loss_meter.update(loss.item(), X.size()[0] )
+            print ('==> Train. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}\n'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
-        if (i+1) % 100 == 0:
-            print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(\
-                epoch+1, num_epochs, i+1, total_step, loss_meter.avg) )
+            # val
+            model.eval()
+            print ('------------------- Val.: Epoch [{}/{}] -------------------'.format(\
+                epoch+1, self.num_epochs) )
 
-    print ('==> Val. loss: {:.4f}'.format(loss_meter.avg) )
+            loss_meter.reset()
+            tr_loss_meter.reset()
+            rot_loss_meter.reset()
+            
+            with torch.no_grad():
+                for index, _valid_set in enumerate(val_loader):
+                    image,target_tr,target_rot = _valid_set
+                    image = image.to(self.device)
+                    target_tr = target_tr.to(self.device)
+                    target_rot = target_rot.to(self.device)
 
-torch.save(model.state_dict(), 'trained.pt')
+                    # Forward pass
+                    pred_tr,pred_rot = model(image)
+                    loss, tr_loss, rot_loss = criterion.compute_pose_loss(pred_tr, pred_rot, target_tr, target_rot, self.beta)
+                    # print(loss)
 
-model.load_state_dict(torch.load('trained.pt'))
-model.eval()
+                    # logging
+                    loss_meter.update(loss.item(), image.size()[0] )
+                    tr_loss_meter.update(tr_loss.item(), image.size()[0] )
+                    rot_loss_meter.update(rot_loss.item(), image.size()[0] )
 
-cm = np.zeros(shape=(2,2) )
+                    # if (index+1) % 10 == 0:
+                    #     print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, tr_loss: {:.4f}  rot_loss: {:.4f}'.format(\
+                    #         epoch+1, self.num_epochs, index+1, total_step, loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
-for i, (X, y) in enumerate(val_loader):
-    X = X.to(device)
-    y = y.to(device)
 
-    # forward pass
-    outputs = model(X)
-    loss = criterion(outputs, y)
+            print ('==> Val. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
-    # prediction
-    preds = torch.argmax(outputs.data, 1)
-    cm += confusion_matrix(y.cpu(), preds.cpu(),labels=[0,1])
-
-acc = np.sum(np.diag(cm)/np.sum(cm) )
-print ('==> Val. Accuracy: {:.4f}'.format(acc) )
-print('Confusion matrix')
-print(cm)
+            if loss_meter.avg < self.best_val_loss:
+                self.best_val_loss = loss_meter.avg
+                torch.save(model.state_dict(), self.save_path_with_time + '/best.pth')
+                print(f"[best model saved]\n")
+            
+            if (epoch+1) % self.save_epoch_period == 0:
+                torch.save(model.state_dict(), self.save_path_with_time + '/epoch'+ str(epoch+1) +'.pth')
+                print(f"[step {epoch+1} model saved]\n")
