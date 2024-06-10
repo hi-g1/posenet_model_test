@@ -1,10 +1,13 @@
 import os
 import torch
 from torchvision import transforms
+import wandb
 import cambridge
 from models.posenet import PoseNet
 import criterion
 from utils import AverageMeter
+from datetime import datetime
+from pytz import timezone
 
 class Train(object):
     def __init__(self, args):
@@ -18,11 +21,31 @@ class Train(object):
         self.initial_learning_rate = args.initial_learning_rate
         self.device = args.device
         self.model_save_path = args.model_save_path
+        self.wandb_use = args.wandb_use
         self.save_epoch_period = args.save_epoch_period
         self.dataset_path = args.dataset_path
         self.best_val_loss = 1e10
         self._train_set = 0
         self._valid_set = 0
+        self.start_time = datetime.now(timezone('Asia/Seoul')).strftime("%y%m%d%H%M")
+        
+        # Pose_modelname_param_lr_beta_time
+        self.save_path_with_time = 'Pose_' + '_' + str(self.start_time[2:]) 
+
+        if self.wandb_use:
+            wandb.init(project='Training PosNet')
+            wandb.run.name = self.save_path_with_time
+            wandb.run.save()
+
+            model_args = {
+            "learning_rate": args.learning_rate,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "image_size": args.img_size
+            }
+
+            wandb.config.update(model_args)
+            print('wandb 사용 중')
 
         if not os.path.exists(self.save_path_with_time):
             os.makedirs(self.save_path_with_time)
@@ -128,6 +151,12 @@ class Train(object):
                 tr_loss_meter.update(tr_loss.item(), image.size()[0] )
                 rot_loss_meter.update(rot_loss.item(), image.size()[0] )
 
+            if self.wandb_use:
+                wandb.log({"Training loss": loss_meter.avg})
+                wandb.log({"Training tr_loss": tr_loss_meter.avg})
+                wandb.log({"Training rot_loss": rot_loss_meter.avg})
+                # wandb.log({"learning_rate": rot_loss_meter.avg})
+
             print ('==> Train. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}\n'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
             # val
@@ -160,6 +189,10 @@ class Train(object):
                     #     print ('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}, tr_loss: {:.4f}  rot_loss: {:.4f}'.format(\
                     #         epoch+1, self.num_epochs, index+1, total_step, loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 
+                if self.wandb_use:
+                    wandb.log({"Valid loss": loss_meter.avg})
+                    wandb.log({"Valid tr_loss": tr_loss_meter.avg})
+                    wandb.log({"Valid rot_loss": rot_loss_meter.avg})
 
             print ('==> Val. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
 

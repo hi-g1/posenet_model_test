@@ -21,6 +21,7 @@ if __name__ == "__main__":
     parser.add_argument('--initial_learning_rate', type=float, default=0.001, help='Decayin_yes')
     
     parser.add_argument('--device', type=str, default='cuda', help='cpu or gpu')
+    parser.add_argument('--wandb_use', type=boolean_argument, default=True, help='log data')
     parser.add_argument('--is_evaluate', type=boolean_argument, default=True, help='True=> Test, False=> Train')
     parser.add_argument('--save_epoch_period', type=int, default=10, help='save period')
 
