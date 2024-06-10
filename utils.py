@@ -1,3 +1,5 @@
+from distutils.util import strtobool
+
 # logger
 class AverageMeter():
     def __init__(self):
@@ -14,3 +16,7 @@ class AverageMeter():
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+
+def boolean_argument(value):
+    """Convert a string value to boolean."""
+    return bool(strtobool(value))
