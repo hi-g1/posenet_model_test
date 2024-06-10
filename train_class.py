@@ -3,7 +3,7 @@ import torch
 from torchvision import transforms
 import wandb
 import cambridge
-from models.posenet import PoseNet
+import models.posenet
 import criterion
 from utils import AverageMeter
 from datetime import datetime
@@ -17,6 +17,7 @@ class Train(object):
         self.image_height = (args.img_size)[1]
         self.batch_size = args.batch_size
         self.num_epochs = args.epochs
+        self.decaying_use = args.decaying_use
         self.learning_rate = args.learning_rate
         self.initial_learning_rate = args.initial_learning_rate
         self.device = args.device
@@ -24,6 +25,7 @@ class Train(object):
         self.wandb_use = args.wandb_use
         self.save_epoch_period = args.save_epoch_period
         self.dataset_path = args.dataset_path
+        self.model = args.model
         self.beta = args.beta
         self.best_val_loss = 1e10
         self._train_set = 0
@@ -31,8 +33,8 @@ class Train(object):
         self.start_time = datetime.now(timezone('Asia/Seoul')).strftime("%y%m%d%H%M")
         
         # Pose_modelname_param_lr_beta_time
-        self.save_path_with_time = 'Pose_' + str(self.args.param) + \
-            '_' + str(self.beta) +str(self.start_time[2:]) 
+        self.save_path_with_time = 'Pose_' + self.model + '_' + str(self.args.param) + \
+            '_' +  str(self.decaying_use) + '_' + str(self.beta) + '_' + str(self.start_time[2:]) 
 
         if self.wandb_use:
             wandb.init(project='Training PosNet')
@@ -58,6 +60,9 @@ class Train(object):
             device = torch.device('cuda')
         else: device = torch.device('cpu')
         print(f"using device {device}...")
+
+    def step_decay(epoch, initial_lr, drop, epochs_drop):
+        return initial_lr * (drop ** (epoch // epochs_drop))
 
     def data_loader(self):
         # basic transform
@@ -94,11 +99,25 @@ class Train(object):
     
     def train(self):
 
-        m = PoseNet()
+        # 모델 설정하기
+        if self.model == "mobilenet":
+            m = models.posenet.PoseMobile(self.args.param, self.args.use_default_weight)
+        elif self.model == "resnet50":
+            m = models.posenet.PoseRes(self.args.param, self.args.use_default_weight)
+        elif self.model == "vgg16":
+            m = models.posenet.PoseVgg(self.args.param, self.args.use_default_weight)
+
+        model = m.to(self.device)
         model = m.to(self.device)
 
         # 옵티마이저
-        optimizer = torch.optim.SGD(m.parameters(), lr=self.learning_rate, momentum=0.9)
+        if self.decaying_use:
+            optimizer = torch.optim.SGD(m.parameters(), lr=self.initial_learning_rate, momentum=0.9)
+            _scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
+            print('⭕ [decaying_lr is using]')
+        else:
+            optimizer = torch.optim.SGD(m.parameters(), lr=self.learning_rate, momentum=0.9)
+            print('❌ [decaying_lr is not using]')
 
         # 데이터셋 로드
         train_loader, val_loader = self.data_loader()
@@ -197,6 +216,10 @@ class Train(object):
                     wandb.log({"Valid rot_loss": rot_loss_meter.avg})
 
             print ('==> Val. loss: {:.4f}  tr_loss: {:.4f}  rot_loss: {:.4f}'.format(loss_meter.avg, tr_loss_meter.avg, rot_loss_meter.avg) )
+
+            # use decaying lr
+            if self.decaying_use:
+                _scheduler.step()
 
             if loss_meter.avg < self.best_val_loss:
                 self.best_val_loss = loss_meter.avg
